@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flare PM-AMM</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.1/ethers.umd.min.js"></script>
+<style>
+  .gauge-needle { transition: transform 0.5s ease-out; transform-origin: bottom center; }
+  body { font-family: 'Inter', system-ui, sans-serif; }
+</style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+<!-- ═══ Header ═══ -->
+<header class="border-b border-gray-800 px-6 py-4">
+  <h1 class="text-xl font-bold">Flare PM-AMM <span class="text-gray-500 font-normal text-sm ml-2">Risk-Aware Binary Prediction Market</span></h1>
+  <p id="status" class="text-xs text-yellow-400 mt-1">Connecting to Anvil...</p>
+</header>
+
+<!-- ═══ Main Grid ═══ -->
+<main class="max-w-7xl mx-auto px-6 py-8 grid grid-cols-1 md:grid-cols-3 gap-6">
+
+  <!-- ── Left: Risk Gauge ── -->
+  <section class="bg-gray-900 rounded-xl p-6 border border-gray-800">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Risk Score</h2>
+    <div class="flex flex-col items-center">
+      <!-- Gauge (SVG semicircle) -->
+      <svg width="220" height="130" viewBox="0 0 220 130" class="mb-1">
+        <!-- Background track -->
+        <path d="M 20 120 A 90 90 0 0 1 200 120" fill="none" stroke="#374151" stroke-width="16" stroke-linecap="round"/>
+        <!-- Colored arc (green -> yellow -> red) -->
+        <defs>
+          <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#22c55e"/>
+            <stop offset="50%" stop-color="#eab308"/>
+            <stop offset="100%" stop-color="#ef4444"/>
+          </linearGradient>
+        </defs>
+        <path d="M 20 120 A 90 90 0 0 1 200 120" fill="none" stroke="url(#gaugeGrad)" stroke-width="16" stroke-linecap="round"
+          id="gaugeArc" stroke-dasharray="282.74" stroke-dashoffset="282.74"/>
+        <!-- Needle -->
+        <line id="needle" x1="110" y1="120" x2="110" y2="38" stroke="white" stroke-width="3" stroke-linecap="round"
+          style="transition: transform 0.5s ease-out; transform-origin: 110px 120px; transform: rotate(-90deg);"/>
+        <!-- Center dot -->
+        <circle cx="110" cy="120" r="6" fill="white"/>
+      </svg>
+      <div id="rValue" class="text-4xl font-bold mt-1">--</div>
+      <div class="text-xs text-gray-500 mb-6">R (0 = safe, 1 = max risk)</div>
+
+      <!-- Metrics -->
+      <div class="w-full space-y-3 text-sm">
+        <div class="flex justify-between"><span class="text-gray-400">Fee</span><span id="feeBps" class="font-mono">--</span><span class="text-gray-500">bps</span></div>
+        <div class="flex justify-between"><span class="text-gray-400">Max Trade</span><span id="maxTrade" class="font-mono">--</span></div>
+        <div class="flex justify-between"><span class="text-gray-400">Rel. Divergence</span><span id="relDiv" class="font-mono">--</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Center: Trade Panel ── -->
+  <section class="bg-gray-900 rounded-xl p-6 border border-gray-800">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Trade</h2>
+
+    <!-- Price display -->
+    <div class="text-center mb-6">
+      <div class="text-xs text-gray-500">Internal Market Price</div>
+      <div id="price" class="text-5xl font-bold tracking-tight">--</div>
+    </div>
+
+    <!-- Trade input -->
+    <div class="mb-4">
+      <label class="text-xs text-gray-500">Collateral Amount</label>
+      <input id="tradeAmount" type="number" value="10" step="1" min="1"
+        class="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-lg font-mono focus:ring-2 focus:ring-blue-500 focus:outline-none">
+    </div>
+
+    <!-- Buttons -->
+    <div class="grid grid-cols-2 gap-3 mb-4">
+      <button onclick="executeTrade('yes')" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 rounded-lg transition">Buy YES</button>
+      <button onclick="executeTrade('no')" class="bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-lg transition">Buy NO</button>
+    </div>
+
+    <!-- Last trade result -->
+    <div id="tradeResult" class="text-xs text-gray-500 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono"></div>
+  </section>
+
+  <!-- ── Right: Market Info ── -->
+  <section class="bg-gray-900 rounded-xl p-6 border border-gray-800">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Market Info</h2>
+    <div class="space-y-3 text-sm">
+      <div class="flex justify-between"><span class="text-gray-400">Anchor (Oracle)</span><span id="anchor" class="font-mono">--</span></div>
+      <div class="flex justify-between"><span class="text-gray-400">Time to Expiry</span><span id="tte" class="font-mono">--</span></div>
+      <div class="flex justify-between"><span class="text-gray-400">Resolved</span><span id="resolved" class="font-mono">--</span></div>
+      <hr class="border-gray-800">
+      <div class="flex justify-between"><span class="text-gray-400">YES Supply</span><span id="yesSupply" class="font-mono">--</span></div>
+      <div class="flex justify-between"><span class="text-gray-400">NO Supply</span><span id="noSupply" class="font-mono">--</span></div>
+      <div class="flex justify-between"><span class="text-gray-400">LP Pool</span><span id="lpPool" class="font-mono">--</span></div>
+      <div class="flex justify-between"><span class="text-gray-400">Fees Earned</span><span id="fees" class="font-mono">--</span></div>
+      <hr class="border-gray-800">
+      <div class="flex justify-between"><span class="text-gray-400">Your YES</span><span id="myYes" class="font-mono">--</span></div>
+      <div class="flex justify-between"><span class="text-gray-400">Your NO</span><span id="myNo" class="font-mono">--</span></div>
+      <div class="flex justify-between"><span class="text-gray-400">Your DUSD</span><span id="myToken" class="font-mono">--</span></div>
+    </div>
+  </section>
+</main>
+
+<!-- ═══ Control Panel ═══ -->
+<div class="max-w-7xl mx-auto px-6 pb-8 space-y-4">
+
+  <!-- Oracle Slider -->
+  <section class="bg-gray-900 rounded-xl p-6 border border-gray-800">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Oracle Price <span class="text-xs font-normal text-gray-600">(R_div — drag to simulate FTSO price divergence)</span></h2>
+    <div class="flex items-center gap-4">
+      <span class="text-xs text-gray-500 w-16">$500</span>
+      <input id="oracleSlider" type="range" min="500" max="5000" value="2500" step="50"
+        class="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500">
+      <span class="text-xs text-gray-500 w-16 text-right">$5000</span>
+      <div class="text-lg font-mono font-bold w-24 text-right">$<span id="sliderValue">2500</span></div>
+      <button onclick="setOraclePrice()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg text-sm font-bold transition">Set</button>
+    </div>
+  </section>
+
+  <!-- Time Warp Slider -->
+  <section class="bg-gray-900 rounded-xl p-6 border border-gray-800">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Time Warp <span class="text-xs font-normal text-gray-600">(R_time — fast-forward blockchain time toward expiry)</span></h2>
+    <div class="flex items-center gap-4">
+      <span class="text-xs text-gray-500 w-20">0 min</span>
+      <input id="timeSlider" type="range" min="0" max="115" value="0" step="5"
+        class="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500">
+      <span class="text-xs text-gray-500 w-20 text-right">115 min</span>
+      <div class="text-lg font-mono font-bold w-28 text-right"><span id="timeSliderValue">0</span> min</div>
+      <button onclick="warpTime()" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-lg text-sm font-bold transition">Warp</button>
+    </div>
+    <p class="text-xs text-gray-600 mt-2">Jumps forward by the selected amount. Cumulative — each click adds more time. Market expires after ~120 min total.</p>
+  </section>
+
+  <!-- LP Pool Slider -->
+  <section class="bg-gray-900 rounded-xl p-6 border border-gray-800">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">LP Pool Size <span class="text-xs font-normal text-gray-600">(R_liq — withdraw liquidity to increase liquidity risk)</span></h2>
+    <div class="flex items-center gap-4">
+      <span class="text-xs text-gray-500 w-20">100</span>
+      <input id="lpSlider" type="range" min="100" max="100000" value="100000" step="100"
+        class="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-amber-500">
+      <span class="text-xs text-gray-500 w-20 text-right">100,000</span>
+      <div class="text-lg font-mono font-bold w-28 text-right"><span id="lpSliderValue">100,000</span></div>
+      <button onclick="setLPPool()" class="bg-amber-600 hover:bg-amber-500 px-4 py-2 rounded-lg text-sm font-bold transition">Set</button>
+    </div>
+    <p class="text-xs text-gray-600 mt-2">Withdraws LP to reach target. Below 1,000 tokens (L_target), R_liq starts climbing toward 1.0.</p>
+  </section>
+
+  <!-- Reset Button -->
+  <section class="bg-gray-900 rounded-xl p-6 border border-gray-800">
+    <div class="flex items-center justify-between">
+      <div>
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wide">Reset Demo</h2>
+        <p class="text-xs text-gray-600 mt-1">Reverts blockchain to initial state: resets time, LP pool, oracle, trades — everything back to the starting snapshot.</p>
+      </div>
+      <button onclick="resetAll()" class="bg-red-700 hover:bg-red-600 px-6 py-3 rounded-lg text-sm font-bold transition">Reset All</button>
+    </div>
+  </section>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════
+//  CONFIG — paste addresses from DeployLocal output
+// ═══════════════════════════════════════════════════
+const CONFIG = {
+  rpc: "http://127.0.0.1:8545",
+  // Anvil default deployer (account 0)
+  // These addresses are deterministic for the first Anvil run.
+  // If different, update from DeployLocal.s.sol output.
+  TOKEN:      "0x3347B4d90ebe72BeFb30444C9966B2B990aE9FcB",
+  ORACLE:     "0x3155755b79aA083bd953911C92705B7aA82a18F9",
+  CONTROLLER: "0x5bf5b11053e734690269C6B9D438F8C9d48F528A",
+  MARKET:     "0xffa7CA1AEEEbBc30C874d32C7e22F052BbEa0429",
+  AMM:        "0x3aAde2dCD2Df6a8cAc689EE797591b2913658659",
+  YES_TOKEN:  "0x7E1a89BCB1B1c77ff68E349348dD0cc3297884d4",
+  NO_TOKEN:   "0x477185F8bB6371903B85f13880c4Aa8Ab8A45F1b",
+  LP_TOKEN:   "0x3A875BcAAD0F75D068d724aaDB9a74455FA99797",
+};
+
+// Minimal ABIs
+const AMM_ABI = [
+  "function price() view returns (uint256)",
+  "function totalPool() view returns (uint256)",
+  "function collateralBalance() view returns (uint256)",
+  "function accumulatedFees() view returns (uint256)",
+  "function lpTotalDeposits() view returns (uint256)",
+  "function bandBps() view returns (uint256)",
+  "function buyYes(uint256) returns (uint256)",
+  "function buyNo(uint256) returns (uint256)",
+  "function deposit(uint256)",
+  "function withdraw(uint256)",
+  "function yesToken() view returns (address)",
+  "function noToken() view returns (address)",
+  "function lpToken() view returns (address)",
+];
+const CTRL_ABI = [
+  "function riskScore(uint256,uint256,uint256,uint256) view returns (uint256)",
+  "function params(uint256) view returns (uint256,uint256)",
+];
+const ORACLE_ABI = [
+  "function anchorPrice() view returns (uint256)",
+  "function setAnchorPrice(uint256)",
+];
+const MARKET_ABI = [
+  "function timeToExpiry() view returns (uint256)",
+  "function resolved() view returns (bool)",
+  "function expiry() view returns (uint256)",
+  "function resetForDemo(uint256)",
+];
+const TOKEN_ABI = [
+  "function totalSupply() view returns (uint256)",
+  "function balanceOf(address) view returns (uint256)",
+  "function approve(address,uint256) returns (bool)",
+];
+
+let provider, signer, amm, controller, oracle, market, token, yesToken, noToken;
+let snapshotId = null; // Anvil snapshot for reset
+
+// ── Format WAD to readable string ──
+function fmtWad(bn, decimals = 2) {
+  const s = ethers.formatEther(bn);
+  const n = parseFloat(s);
+  if (Math.abs(n) < 0.01 && n !== 0) return n.toExponential(2);
+  return n.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+// ── Initialize ──
+async function init() {
+  try {
+    provider = new ethers.JsonRpcProvider(CONFIG.rpc);
+    const accounts = await provider.listAccounts();
+    signer = accounts[0];
+
+    amm = new ethers.Contract(CONFIG.AMM, AMM_ABI, signer);
+    controller = new ethers.Contract(CONFIG.CONTROLLER, CTRL_ABI, signer);
+    oracle = new ethers.Contract(CONFIG.ORACLE, ORACLE_ABI, signer);
+    market = new ethers.Contract(CONFIG.MARKET, MARKET_ABI, signer);
+    token = new ethers.Contract(CONFIG.TOKEN, TOKEN_ABI, signer);
+
+    // Resolve token addresses
+    CONFIG.YES_TOKEN = await amm.yesToken();
+    CONFIG.NO_TOKEN = await amm.noToken();
+    CONFIG.LP_TOKEN = await amm.lpToken();
+    yesToken = new ethers.Contract(CONFIG.YES_TOKEN, TOKEN_ABI, signer);
+    noToken = new ethers.Contract(CONFIG.NO_TOKEN, TOKEN_ABI, signer);
+
+    document.getElementById("status").textContent = "Connected to Anvil (" + (await signer.getAddress()).slice(0, 10) + "...)";
+    document.getElementById("status").className = "text-xs text-green-400 mt-1";
+
+    // Approve AMM for token spending (max)
+    await token.approve(CONFIG.AMM, ethers.MaxUint256);
+
+    // Take a snapshot for reset functionality
+    snapshotId = await provider.send("evm_snapshot", []);
+
+    await refresh();
+    setInterval(refresh, 3000);
+  } catch (e) {
+    document.getElementById("status").textContent = "Failed to connect: " + e.message;
+    document.getElementById("status").className = "text-xs text-red-400 mt-1";
+  }
+}
+
+// ── Refresh all state ──
+async function refresh() {
+  try {
+    const [p, anchorBn, tte, resolved, yesSupply, noSupply, lpPool, fees, totalPool] = await Promise.all([
+      amm.price(),
+      oracle.anchorPrice(),
+      market.timeToExpiry(),
+      market.resolved(),
+      yesToken.totalSupply(),
+      noToken.totalSupply(),
+      amm.lpTotalDeposits(),
+      amm.accumulatedFees(),
+      amm.totalPool(),
+    ]);
+
+    const addr = await signer.getAddress();
+    const [myYes, myNo, myToken] = await Promise.all([
+      yesToken.balanceOf(addr),
+      noToken.balanceOf(addr),
+      token.balanceOf(addr),
+    ]);
+
+    // Risk score
+    const R = await controller.riskScore(p, anchorBn, tte, totalPool);
+    const [feeBps, maxTrade] = await controller.params(R);
+
+    // Relative divergence
+    const d = p > anchorBn ? p - anchorBn : anchorBn - p;
+    const relDiv = anchorBn > 0n ? (d * ethers.parseEther("1")) / anchorBn : 0n;
+
+    // Update DOM
+    document.getElementById("price").textContent = "$" + fmtWad(p);
+    document.getElementById("anchor").textContent = "$" + fmtWad(anchorBn);
+    document.getElementById("tte").textContent = Number(tte) > 0 ? Math.floor(Number(tte) / 60) + " min" : "EXPIRED";
+    document.getElementById("resolved").textContent = resolved ? "YES" : "No";
+    document.getElementById("yesSupply").textContent = fmtWad(yesSupply);
+    document.getElementById("noSupply").textContent = fmtWad(noSupply);
+    document.getElementById("lpPool").textContent = fmtWad(lpPool);
+    document.getElementById("fees").textContent = fmtWad(fees);
+    document.getElementById("myYes").textContent = fmtWad(myYes);
+    document.getElementById("myNo").textContent = fmtWad(myNo);
+    document.getElementById("myToken").textContent = fmtWad(myToken);
+
+    // Risk gauge
+    const rFloat = parseFloat(ethers.formatEther(R));
+    document.getElementById("rValue").textContent = rFloat.toFixed(3);
+    document.getElementById("rValue").className = rFloat < 0.3 ? "text-4xl font-bold mt-1 text-green-400" :
+      rFloat < 0.7 ? "text-4xl font-bold mt-1 text-yellow-400" : "text-4xl font-bold mt-1 text-red-400";
+    // SVG arc: total arc length = 282.74, dashoffset goes from 282.74 (empty) to 0 (full)
+    const arcLen = 282.74;
+    const filled = arcLen * rFloat;
+    document.getElementById("gaugeArc").setAttribute("stroke-dashoffset", arcLen - filled);
+    // Needle rotation: -90deg = left (R=0), 0deg = middle, +90deg = right (R=1)
+    const angle = -90 + (rFloat * 180);
+    document.getElementById("needle").style.transform = `rotate(${angle}deg)`;
+
+    document.getElementById("feeBps").textContent = Number(feeBps) + " bps (" + (Number(feeBps) / 100).toFixed(2) + "%)";
+    document.getElementById("maxTrade").textContent = fmtWad(maxTrade) + " tokens";
+    document.getElementById("relDiv").textContent = (parseFloat(ethers.formatEther(relDiv)) * 100).toFixed(1) + "%";
+  } catch (e) {
+    console.error("Refresh error:", e);
+  }
+}
+
+// ── Execute trade ──
+async function executeTrade(side) {
+  const resultDiv = document.getElementById("tradeResult");
+  try {
+    const amount = document.getElementById("tradeAmount").value;
+    const amountWei = ethers.parseEther(amount);
+    resultDiv.textContent = `Executing buy${side.toUpperCase()}(${amount})...`;
+    resultDiv.className = "text-xs text-yellow-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+    let tx;
+    if (side === "yes") {
+      tx = await amm.buyYes(amountWei);
+    } else {
+      tx = await amm.buyNo(amountWei);
+    }
+    const receipt = await tx.wait();
+
+    resultDiv.textContent = `Buy ${side.toUpperCase()} success! Gas: ${receipt.gasUsed.toString()}`;
+    resultDiv.className = "text-xs text-green-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+    await refresh();
+  } catch (e) {
+    resultDiv.textContent = `Error: ${e.reason || e.message}`;
+    resultDiv.className = "text-xs text-red-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+  }
+}
+
+// ── Oracle slider ──
+document.getElementById("oracleSlider").addEventListener("input", (e) => {
+  document.getElementById("sliderValue").textContent = e.target.value;
+});
+
+async function setOraclePrice() {
+  const val = document.getElementById("oracleSlider").value;
+  const resultDiv = document.getElementById("tradeResult");
+  try {
+    resultDiv.textContent = `Setting oracle to $${val}...`;
+    resultDiv.className = "text-xs text-yellow-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+    const tx = await oracle.setAnchorPrice(ethers.parseEther(val));
+    await tx.wait();
+
+    resultDiv.textContent = `Oracle set to $${val}`;
+    resultDiv.className = "text-xs text-blue-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+    await refresh();
+  } catch (e) {
+    resultDiv.textContent = `Error: ${e.reason || e.message}`;
+    resultDiv.className = "text-xs text-red-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+  }
+}
+
+// ── Time warp slider ──
+document.getElementById("timeSlider").addEventListener("input", (e) => {
+  document.getElementById("timeSliderValue").textContent = e.target.value;
+});
+
+async function warpTime() {
+  const minutes = parseInt(document.getElementById("timeSlider").value);
+  if (minutes === 0) return;
+  const resultDiv = document.getElementById("tradeResult");
+  try {
+    resultDiv.textContent = `Warping ${minutes} minutes forward...`;
+    resultDiv.className = "text-xs text-yellow-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+    const seconds = minutes * 60;
+    // Anvil JSON-RPC: advance time
+    await provider.send("evm_increaseTime", [seconds]);
+    await provider.send("evm_mine", []);
+
+    resultDiv.textContent = `Warped ${minutes} min forward. Time to expiry updated.`;
+    resultDiv.className = "text-xs text-purple-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+    // Reset slider to 0 after warp (it's cumulative)
+    document.getElementById("timeSlider").value = 0;
+    document.getElementById("timeSliderValue").textContent = "0";
+
+    await refresh();
+  } catch (e) {
+    resultDiv.textContent = `Error: ${e.reason || e.message}`;
+    resultDiv.className = "text-xs text-red-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+  }
+}
+
+// ── LP pool slider ──
+let currentLpPool = 100000; // track current LP pool in whole tokens
+
+document.getElementById("lpSlider").addEventListener("input", (e) => {
+  document.getElementById("lpSliderValue").textContent = parseInt(e.target.value).toLocaleString();
+});
+
+async function setLPPool() {
+  const targetStr = document.getElementById("lpSlider").value;
+  const target = parseInt(targetStr);
+  const resultDiv = document.getElementById("tradeResult");
+
+  try {
+    // Read current LP deposits
+    const currentBn = await amm.lpTotalDeposits();
+    const currentTokens = parseFloat(ethers.formatEther(currentBn));
+    const targetTokens = target;
+
+    if (Math.abs(currentTokens - targetTokens) < 1) {
+      resultDiv.textContent = `LP pool already at ~${target.toLocaleString()}`;
+      resultDiv.className = "text-xs text-gray-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+      return;
+    }
+
+    if (targetTokens < currentTokens) {
+      // Withdraw the difference
+      const diff = currentTokens - targetTokens;
+      resultDiv.textContent = `Withdrawing ${Math.round(diff).toLocaleString()} from LP pool...`;
+      resultDiv.className = "text-xs text-yellow-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+      // We need to burn LP shares. shares = diff * totalSupply / lpTotalDeposits
+      const lpSupply = await (new ethers.Contract(CONFIG.LP_TOKEN, TOKEN_ABI, signer)).totalSupply();
+      const sharesToBurn = ethers.parseEther(diff.toString()) * lpSupply / currentBn;
+      const tx = await amm.withdraw(sharesToBurn);
+      await tx.wait();
+
+      resultDiv.textContent = `LP pool reduced to ~${target.toLocaleString()}`;
+      resultDiv.className = "text-xs text-amber-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+    } else {
+      // Deposit the difference
+      const diff = targetTokens - currentTokens;
+      resultDiv.textContent = `Depositing ${Math.round(diff).toLocaleString()} into LP pool...`;
+      resultDiv.className = "text-xs text-yellow-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+      const tx = await amm.deposit(ethers.parseEther(diff.toString()));
+      await tx.wait();
+
+      resultDiv.textContent = `LP pool increased to ~${target.toLocaleString()}`;
+      resultDiv.className = "text-xs text-amber-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+    }
+
+    await refresh();
+  } catch (e) {
+    resultDiv.textContent = `Error: ${e.reason || e.message}`;
+    resultDiv.className = "text-xs text-red-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+  }
+}
+
+// ── Reset all ──
+async function resetAll() {
+  const resultDiv = document.getElementById("tradeResult");
+  try {
+    resultDiv.textContent = "Reverting to initial state...";
+    resultDiv.className = "text-xs text-yellow-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+    // Step 1: Revert to snapshot (undoes all trades, LP changes, oracle changes)
+    if (snapshotId) {
+      await provider.send("evm_revert", [snapshotId]);
+      // evm_revert consumes the snapshot, take a new one immediately
+      snapshotId = await provider.send("evm_snapshot", []);
+    }
+
+    // Step 2: Reset oracle to $2500
+    const tx1 = await oracle.setAnchorPrice(ethers.parseEther("2500"));
+    await tx1.wait();
+
+    // Step 3: Get current block timestamp and reset market expiry to now + 2 hours
+    const block = await provider.getBlock("latest");
+    const newExpiry = block.timestamp + 86400; // 24 hours
+    const tx2 = await market.resetForDemo(newExpiry);
+    await tx2.wait();
+
+    // Step 4: Re-snapshot so next reset also works
+    snapshotId = await provider.send("evm_snapshot", []);
+
+    // Reset all sliders to defaults
+    document.getElementById("oracleSlider").value = 2500;
+    document.getElementById("sliderValue").textContent = "2500";
+    document.getElementById("timeSlider").value = 0;
+    document.getElementById("timeSliderValue").textContent = "0";
+    document.getElementById("lpSlider").value = 100000;
+    document.getElementById("lpSliderValue").textContent = "100,000";
+
+    resultDiv.textContent = "Reset complete. Expiry, oracle, and trades all reverted.";
+    resultDiv.className = "text-xs text-green-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+
+    await refresh();
+  } catch (e) {
+    resultDiv.textContent = `Reset error: ${e.reason || e.message}`;
+    resultDiv.className = "text-xs text-red-400 min-h-[3rem] bg-gray-800 rounded-lg p-3 font-mono";
+  }
+}
+
+// ── Boot ──
+init();
+</script>
+</body>
+</html>
